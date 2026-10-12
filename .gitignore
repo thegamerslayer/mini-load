@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Secrets & local config ---
+# C7: .env is NEVER committed. .env.example is.
+.env
+
+# --- Generated at runtime ---
+logs/
+*.log
+load_test_results/
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+
+.md

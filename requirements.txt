@@ -1,0 +1,43 @@
+# =============================================================================
+#  mini-load - dependency shopping list (set up FOR you, see PROFESSOR.md)
+#
+#  No versions pinned on purpose. Two tasks before you install anything:
+#    1. Read enough of each library's docs to know what it does and why you
+#       need it. If you cannot say why a line is here, delete the line.
+#    2. Pin exact versions yourself once the project runs, using the syntax
+#       from pip's documentation. Check the current release on PyPI - do not
+#       trust any version number you did not verify today.
+#
+#  Only four dependencies. That is not a limitation, it is the assignment:
+#  everything else, you write.
+# =============================================================================
+
+# The web framework for BOTH the load balancer and the backends.
+# DECISION REQUIRED (M1): read the FastAPI tutorial's First Steps and the
+# Starlette routing pages. You must be able to say in one sentence what
+# FastAPI adds over Starlette, and why a catch-all route is the right shape
+# for a proxy.
+fastapi
+
+# The ASGI server that runs both apps. Read its docs on workers and on
+# running programmatically before M1's checkpoint.
+uvicorn
+
+# The forwarding engine (M2+): async HTTP client, streaming, timeouts.
+# DECISION REQUIRED (M2): AsyncClient to a real URL vs ASGITransport to an
+# app object - read python-httpx.org/advanced/transports and write why in
+# docs/architecture.md.
+httpx
+
+# Config from environment variables (M1). README constraint C7 says nothing
+# is hardcoded.
+python-dotenv
+
+# =============================================================================
+#  Phase 6+ (M6/M8) - add these ONLY when you reach those milestones. Read
+#  the docs first; if you cannot say why a line is here, delete the line.
+# =============================================================================
+#
+# locust          # load testing rig (M6 rig, M8 run matrix)
+# pytest          # test runner (M3) - plus anyio (ships with fastapi) or
+#                 # pytest-asyncio; pick one, justify the choice in a comment
