@@ -16,7 +16,7 @@ No nginx. No Envoy. No JS framework. Every hop of the proxy path is ordinary Pyt
 
 </div>
 
-![The dashboard under 15 req/s of round-robin traffic](docs/Detailed_Dashboard.png)
+
 ![The dashboard under 15 req/s of round-robin traffic](docs/dashboard.png)
 ---
 
