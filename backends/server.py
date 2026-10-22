@@ -22,8 +22,9 @@ TODO(M1): implement. Nothing is written here yet - C8 and ROADMAP M1 say you
 write every line of this file yourself. Run it three times with three
 different env sets; one file, three invocations, never three copies.
 """
-
+import time
 import os
+import sys 
 import asyncio 
 from fastapi import FastAPI
 from dotenv import load_dotenv
@@ -37,6 +38,9 @@ SERVER_NAME = os.getenv("SERVER_NAME","default")
 SERVER_PORT = int(os.getenv("SERVER_PORT",8000))
 SERVER_WORK_DELAY_MS = int(os.getenv("SERVER_WORK_DELAY_MS",0))
 
+crashed_until = 0
+
+
 @app.get("/")
 async def identity():
   return {
@@ -47,6 +51,11 @@ async def identity():
   
 @app.get("/health")
 async def health():
+  global crashed_until
+  
+  if time.time() < crashed_until:
+    await asyncio.sleep(crashed_until - time.time())
+  
   return {
     "status" : "OK"
   }
@@ -56,4 +65,16 @@ async def work(ms : int):
   await asyncio.sleep(ms/1000.0)
   return {
     "done_in_ms":ms
+  }
+  
+@app.get("/crash")
+async def crash(seconds: int):
+  global crashed_until
+  
+  crashed_until = time.time() + seconds
+  
+  return {
+    
+    "message": f"{SERVER_NAME} health endpoint disabled for {seconds} seconds"
+
   }

@@ -1,20 +1,1251 @@
 <!DOCTYPE html>
 <!--
-  mini-load dashboard - single page, no JS frameworks (README_FIRST Part 4).
+  mini-load - the big window.
 
-  Required by M6:
-    - polls /stats once per second
-    - shows per-backend status, request counts, RPS, latencies
-    - lets you switch the balancing algorithm without restarting the LB
-
-  TODO(M6): write this. One HTML file, plain fetch() + DOM updates.
+  ONE file, no frameworks, no build step. It peeks at /stats once a second,
+  draws everything with plain DOM + SVG, and swaps the choosing rule through
+  POST /ui/strategy without restarting the door.
 -->
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>mini-load dashboard</title>
-  </head>
-  <body>
-    <!-- TODO(M6) -->
-  </body>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mini-load · door helper</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1020'/%3E%3Cpath d='M16 6l8 10-8 10-8-10z' fill='%234ff0b7'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #05070d;
+    --text: #eaf2ff;
+    --muted: #8895b3;
+    --faint: #5d6a87;
+    --line: rgba(255, 255, 255, 0.08);
+    --line-strong: rgba(255, 255, 255, 0.14);
+    --panel: linear-gradient(160deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.016));
+    --accent: #4ff0b7;
+    --accent-soft: rgba(79, 240, 183, 0.14);
+    --blue: #6ea8ff;
+    --violet: #a58bff;
+    --warn: #ffc46b;
+    --bad: #ff6b81;
+    --radius: 18px;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { min-height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.45;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Background                                                      */
+  /* ---------------------------------------------------------------- */
+  .aurora {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 600px at 12% -10%, rgba(79, 240, 183, 0.10), transparent 60%),
+      radial-gradient(900px 600px at 100% 8%, rgba(110, 168, 255, 0.10), transparent 55%),
+      radial-gradient(900px 700px at 50% 115%, rgba(165, 139, 255, 0.10), transparent 60%);
+  }
+  .aurora i {
+    position: absolute;
+    display: block;
+    width: 46vw;
+    height: 46vw;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.5;
+    animation: drift 22s ease-in-out infinite alternate;
+  }
+  .aurora i:nth-child(1) { left: -12vw; top: -14vw; background: rgba(79, 240, 183, 0.16); }
+  .aurora i:nth-child(2) { right: -16vw; top: -8vw; background: rgba(110, 168, 255, 0.15); animation-delay: -7s; }
+  .aurora i:nth-child(3) { left: 30vw; bottom: -28vw; background: rgba(165, 139, 255, 0.14); animation-delay: -13s; }
+
+  @keyframes drift {
+    from { transform: translate3d(0, 0, 0) scale(1); }
+    to   { transform: translate3d(4vw, 3vw, 0) scale(1.12); }
+  }
+
+  /* subtle grid overlay */
+  .gridlines {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Shell                                                           */
+  /* ---------------------------------------------------------------- */
+  main, header, footer { position: relative; z-index: 1; }
+
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
+
+  header.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 26px 0 18px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+
+  .mark {
+    width: 42px;
+    height: 42px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border-radius: 13px;
+    background: linear-gradient(145deg, rgba(79, 240, 183, 0.22), rgba(110, 168, 255, 0.10));
+    border: 1px solid rgba(79, 240, 183, 0.35);
+    box-shadow: 0 0 30px rgba(79, 240, 183, 0.18), inset 0 0 12px rgba(79, 240, 183, 0.10);
+    color: var(--accent);
+    font-size: 19px;
+    font-weight: 700;
+    text-shadow: 0 0 12px rgba(79, 240, 183, 0.9);
+  }
+
+  .brand h1 {
+    margin: 0;
+    font-size: 19px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 700;
+    background: linear-gradient(92deg, #ffffff 10%, var(--accent) 62%, var(--blue) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .brand p {
+    margin: 3px 0 0;
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .brand p code { font-family: var(--mono); color: var(--faint); }
+
+  .top-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 13px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .pill.live { color: var(--accent); border-color: rgba(79, 240, 183, 0.28); background: rgba(79, 240, 183, 0.07); }
+  .pill.live .dot { background: var(--accent); box-shadow: 0 0 0 0 rgba(79, 240, 183, 0.6); animation: ping 1.8s infinite; }
+  .pill.down { color: var(--bad); border-color: rgba(255, 107, 129, 0.3); background: rgba(255, 107, 129, 0.08); }
+  .pill.down .dot { background: var(--bad); }
+
+  @keyframes ping {
+    0% { box-shadow: 0 0 0 0 rgba(79, 240, 183, 0.55); }
+    70% { box-shadow: 0 0 0 9px rgba(79, 240, 183, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(79, 240, 183, 0); }
+  }
+
+  .clock {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    padding-left: 14px;
+    border-left: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* rule picker */
+  .rule {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .rule label {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 700;
+  }
+  .rule select {
+    appearance: none;
+    border: 1px solid rgba(79, 240, 183, 0.25);
+    background: rgba(79, 240, 183, 0.08);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 30px 7px 11px;
+    border-radius: 9px;
+    outline: none;
+    cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%),
+                      linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+    background-position: calc(100% - 15px) 53%, calc(100% - 10px) 53%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .rule select:hover { border-color: rgba(79, 240, 183, 0.55); }
+  .rule select:focus-visible { box-shadow: 0 0 0 3px rgba(79, 240, 183, 0.18); }
+  .rule select:disabled { opacity: 0.5; cursor: progress; }
+  .rule select option { background: #0b1020; color: var(--text); }
+
+  /* ---------------------------------------------------------------- */
+  /*  Panels                                                          */
+  /* ---------------------------------------------------------------- */
+  .panel {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 20px 0;
+  }
+  .panel-head h2 {
+    margin: 0;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .hint { font-size: 11px; color: var(--faint); }
+
+  /* ---------------------------------------------------------------- */
+  /*  Hero: chart + KPIs                                              */
+  /* ---------------------------------------------------------------- */
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
+    gap: 18px;
+    padding: 22px 0 8px;
+  }
+
+  .chart-panel { display: flex; flex-direction: column; min-height: 344px; }
+  .chart-wrap { position: relative; flex: 1; padding: 6px 12px 0; min-height: 230px; }
+  .chart-wrap svg { display: block; width: 100%; height: 100%; }
+  .chart-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+  }
+  .chart-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 20px 16px;
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+  }
+  .legend { display: flex; gap: 16px; align-items: center; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+  .legend .l-rps { background: var(--accent); box-shadow: 0 0 10px rgba(79, 240, 183, 0.6); }
+  .legend .l-p95 { background: var(--violet); }
+  .legend .l-err { background: var(--bad); }
+
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .kpi {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    background: var(--panel);
+    backdrop-filter: blur(12px);
+    padding: 14px 15px 12px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .kpi::after {
+    content: "";
+    position: absolute;
+    right: -30px;
+    top: -30px;
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(79, 240, 183, 0.14), transparent 70%);
+    opacity: 0.9;
+  }
+  .kpi:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+  .k-label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 700;
+  }
+  .k-value {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .k-value b { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
+  .k-value em { font-style: normal; font-size: 11px; color: var(--faint); letter-spacing: 0.04em; }
+  .k-sub { margin-top: 5px; font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
+
+  .kpi.accent b { color: var(--accent); text-shadow: 0 0 24px rgba(79, 240, 183, 0.3); }
+  .kpi.good b { color: var(--accent); }
+  .kpi.warn b { color: var(--warn); }
+  .kpi.bad b { color: var(--bad); }
+
+  /* ---------------------------------------------------------------- */
+  /*  Section headers                                                 */
+  /* ---------------------------------------------------------------- */
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 26px 2px 12px;
+  }
+  .section-head h2 {
+    margin: 0;
+    font-size: 12px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text);
+    font-weight: 700;
+  }
+  .section-head .sub { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+  /* ---------------------------------------------------------------- */
+  /*  Backend cards                                                   */
+  /* ---------------------------------------------------------------- */
+  .backends {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+    gap: 16px;
+  }
+
+  .backend {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    padding: 17px 18px 15px;
+    transition: border-color 0.25s, transform 0.25s, box-shadow 0.25s;
+    animation: rise 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  .backend::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(180deg, var(--accent), transparent 75%);
+    opacity: 0.75;
+  }
+  .backend:hover { transform: translateY(-2px); border-color: var(--line-strong); box-shadow: 0 26px 60px rgba(0, 0, 0, 0.4); }
+  .backend.asleep::before { background: linear-gradient(180deg, var(--bad), transparent 75%); }
+  .backend.asleep { border-color: rgba(255, 107, 129, 0.24); }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .b-head { display: flex; align-items: center; gap: 10px; }
+  .b-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(79, 240, 183, 0.5);
+    animation: ping 2s infinite;
+  }
+  .backend.asleep .b-dot { background: var(--bad); animation: none; box-shadow: 0 0 14px rgba(255, 107, 129, 0.8); }
+
+  .b-name {
+    font-size: 14.5px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .b-state {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid rgba(79, 240, 183, 0.28);
+    background: rgba(79, 240, 183, 0.08);
+    border-radius: 999px;
+    padding: 3px 9px;
+    flex: none;
+  }
+  .backend.asleep .b-state { color: var(--bad); border-color: rgba(255, 107, 129, 0.3); background: rgba(255, 107, 129, 0.08); }
+
+  .b-url {
+    margin: 8px 0 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .b-main { display: flex; align-items: center; gap: 16px; }
+
+  .ring {
+    --pct: 0;
+    --ring-color: var(--accent);
+    position: relative;
+    width: 78px;
+    height: 78px;
+    flex: none;
+    border-radius: 50%;
+    background:
+      conic-gradient(var(--ring-color) calc(var(--pct) * 1%), rgba(255, 255, 255, 0.07) 0);
+    display: grid;
+    place-items: center;
+    transition: background 0.5s ease;
+  }
+  .ring::before {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    background: #080c17;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .ring span {
+    position: relative;
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .ring small {
+    position: absolute;
+    bottom: 12px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 7.5px;
+    letter-spacing: 0.16em;
+    color: var(--faint);
+    text-transform: uppercase;
+    font-family: var(--mono);
+  }
+  .backend.asleep .ring { --ring-color: var(--bad); }
+
+  .b-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 12px;
+    flex: 1;
+    min-width: 0;
+  }
+  .b-stat { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .b-stat span { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+  .b-stat b { font-family: var(--mono); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .b-stat b.bad { color: var(--bad); }
+  .b-stat b.warn { color: var(--warn); }
+
+  .b-flight { margin-top: 14px; }
+  .b-flight .bar {
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.07);
+    overflow: hidden;
+  }
+  .b-flight .bar i {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--blue));
+    box-shadow: 0 0 12px rgba(79, 240, 183, 0.5);
+    transition: width 0.45s ease;
+  }
+  .backend.asleep .b-flight .bar i { background: linear-gradient(90deg, var(--bad), var(--violet)); }
+
+  .b-flight .meta {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .b-lat {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted);
+  }
+  .b-lat b { color: var(--text); font-weight: 600; }
+
+  /* ---------------------------------------------------------------- */
+  /*  Lower row                                                       */
+  /* ---------------------------------------------------------------- */
+  .lower {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: 18px;
+    padding-top: 22px;
+  }
+
+  .events {
+    list-style: none;
+    margin: 0;
+    padding: 12px 18px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 268px;
+    overflow: auto;
+  }
+  .events li {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 8px 11px;
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.022);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    animation: rise 0.3s ease both;
+  }
+  .events li.skip { border-left-color: var(--bad); }
+  .events li.welcome { border-left-color: var(--accent); }
+  .events li time { color: var(--faint); font-size: 10.5px; flex: none; }
+  .events li .who { color: var(--text); font-weight: 600; }
+  .events li .what { color: var(--muted); margin-left: auto; font-size: 10.5px; text-align: right; }
+  .events li.skip .who { color: var(--bad); }
+  .events li.welcome .who { color: var(--accent); }
+  .events .quiet { border-left-color: var(--faint); color: var(--faint); justify-content: center; }
+
+  .totals {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 18px;
+    padding: 14px 20px 18px;
+  }
+  .t-item { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
+  .t-item span { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); }
+  .t-item b { font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .t-item b.good { color: var(--accent); }
+  .t-item b.bad { color: var(--bad); }
+
+  /* ---------------------------------------------------------------- */
+  /*  Footer                                                          */
+  /* ---------------------------------------------------------------- */
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    flex-wrap: wrap;
+    margin-top: 26px;
+    padding: 16px 26px;
+    border-top: 1px solid var(--line);
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  footer .check { color: var(--accent); }
+  footer .check.wrong { color: var(--warn); }
+
+  /* ---------------------------------------------------------------- */
+  /*  Toast                                                           */
+  /* ---------------------------------------------------------------- */
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translate(-50%, 20px);
+    z-index: 10;
+    padding: 11px 18px;
+    border-radius: 11px;
+    border: 1px solid rgba(79, 240, 183, 0.35);
+    background: rgba(9, 16, 28, 0.94);
+    backdrop-filter: blur(12px);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 30px rgba(79, 240, 183, 0.12);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s, transform 0.22s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.error { border-color: rgba(255, 107, 129, 0.45); box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 30px rgba(255, 107, 129, 0.12); }
+
+  body.offline main { opacity: 0.55; transition: opacity 0.3s; }
+
+  /* ---------------------------------------------------------------- */
+  /*  Small screens                                                   */
+  /* ---------------------------------------------------------------- */
+  @media (max-width: 1040px) {
+    .hero { grid-template-columns: minmax(0, 1fr); }
+    .lower { grid-template-columns: minmax(0, 1fr); }
+    .chart-panel { min-height: 300px; }
+  }
+  @media (max-width: 660px) {
+    .wrap { padding: 0 16px; }
+    header.topbar { padding-top: 18px; gap: 16px; }
+    .clock { display: none; }
+    .hero { padding-top: 16px; }
+    .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .k-value b { font-size: 22px; }
+    .totals { grid-template-columns: minmax(0, 1fr); }
+    .rule { width: 100%; justify-content: space-between; }
+    .rule select { flex: 1; }
+    footer { padding: 14px 16px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+<div class="gridlines" aria-hidden="true"></div>
+
+<header class="topbar wrap">
+  <div class="brand">
+    <div class="mark">◈</div>
+    <div>
+      <h1>mini-load</h1>
+      <p>the door helper &middot; <code id="doorUrl">localhost:8080</code></p>
+    </div>
+  </div>
+
+  <div class="top-right">
+    <div class="pill" id="conn"><span class="dot"></span><span id="connText">connecting</span></div>
+    <div class="rule">
+      <label for="strategy">rule</label>
+      <select id="strategy" aria-label="choosing rule"></select>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <div class="panel chart-panel">
+      <div class="panel-head">
+        <h2>live traffic</h2>
+        <div class="legend">
+          <span><i class="l-rps"></i>requests/s</span>
+          <span><i class="l-p95"></i>p95</span>
+          <span><i class="l-err"></i>errors/s</span>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <svg id="chart" viewBox="0 0 780 260" preserveAspectRatio="none" role="img" aria-label="requests per second and p95 latency over the last 60 seconds"></svg>
+        <div class="chart-empty" id="chartEmpty">waiting for the first kid&hellip;</div>
+      </div>
+      <div class="chart-foot">
+        <span>-60s</span>
+        <span id="chartNow">now</span>
+      </div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi accent">
+        <span class="k-label">throughput</span>
+        <div class="k-value"><b id="kRps">0</b><em>req/s</em></div>
+        <div class="k-sub">rolling 5s</div>
+      </div>
+      <div class="kpi good" id="kP50Card">
+        <span class="k-label">middle p50</span>
+        <div class="k-value"><b id="kP50">0</b><em>ms</em></div>
+        <div class="k-sub" id="kP50Sub">recent sample</div>
+      </div>
+      <div class="kpi" id="kP95Card">
+        <span class="k-label">slow tail p95</span>
+        <div class="k-value"><b id="kP95">0</b><em>ms</em></div>
+        <div class="k-sub" id="kP95Sub">recent sample</div>
+      </div>
+      <div class="kpi" id="kP99Card">
+        <span class="k-label">worst tail p99</span>
+        <div class="k-value"><b id="kP99">0</b><em>ms</em></div>
+        <div class="k-sub" id="kP99Sub">recent sample</div>
+      </div>
+      <div class="kpi" id="kErrCard">
+        <span class="k-label">error rate</span>
+        <div class="k-value"><b id="kErr">0.0</b><em>%</em></div>
+        <div class="k-sub" id="kErrSub">0 bad of 0 asks</div>
+      </div>
+      <div class="kpi">
+        <span class="k-label">in flight</span>
+        <div class="k-value"><b id="kFlight">0</b><em>kids</em></div>
+        <div class="k-sub" id="kFlightSub">0 helpers awake</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-head">
+    <h2>the helpers</h2>
+    <span class="sub" id="helperSummary">&mdash;</span>
+  </div>
+  <section class="backends" id="backends" aria-live="polite"></section>
+
+  <section class="lower">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>activity</h2>
+        <span class="hint">skips &amp; welcomes, newest first</span>
+      </div>
+      <ul class="events" id="events"></ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>the tally board</h2>
+        <span class="hint" id="uptime">&mdash;</span>
+      </div>
+      <div class="totals" id="totals"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <span id="pollInfo">waiting for /stats&hellip;</span>
+  <span id="sumCheck" class="check">&mdash;</span>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (selector) { return document.querySelector(selector); };
+  var MAX_POINTS = 60;
+  var history = [];
+  var cards = new Map();
+  var optionsBuilt = false;
+  var currentStrategy = null;
+  var timer = null;
+  var toastTimer = null;
+  var lastGoodAt = null;
+
+  var esc = function (value) {
+    return String(value === null || value === undefined ? "" : value).replace(/[&<>"']/g, function (char) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char];
+    });
+  };
+
+  var num = function (value) {
+    return Number(value || 0).toLocaleString("en-US");
+  };
+
+  var ms = function (value) {
+    if (value === null || value === undefined) { return "&mdash;"; }
+    if (value >= 1000) { return (value / 1000).toFixed(value >= 10000 ? 0 : 2) + " s"; }
+    return (value < 10 ? value.toFixed(1) : Math.round(value)) + " ms";
+  };
+
+  function duration(seconds) {
+    if (seconds === null || seconds === undefined) { return "&mdash;"; }
+    var total = Math.max(0, Math.floor(seconds));
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    if (h) { return h + "h " + m + "m"; }
+    if (m) { return m + "m " + s + "s"; }
+    return s + "s";
+  }
+
+  function setText(id, text) {
+    var el = document.getElementById(id);
+    if (el) { el.textContent = text; }
+  }
+
+  function setHtml(id, html) {
+    var el = document.getElementById(id);
+    if (el) { el.innerHTML = html; }
+  }
+
+  function classify(value, good, warn) {
+    if (value === null || value === undefined) { return ""; }
+    if (value <= good) { return "good"; }
+    if (value <= warn) { return "warn"; }
+    return "bad";
+  }
+
+  function toast(message, isError) {
+    var el = $("#toast");
+    el.textContent = message;
+    el.className = "toast show" + (isError ? " error" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.className = "toast"; }, 2800);
+  }
+
+  /* --------------------------------------------------------------- */
+  /*  Chart                                                           */
+  /* --------------------------------------------------------------- */
+  function drawChart() {
+    var svg = $("#chart");
+    var empty = $("#chartEmpty");
+    var width = 780, height = 260;
+    var pad = { top: 16, right: 14, bottom: 26, left: 46 };
+    var plotWidth = width - pad.left - pad.right;
+    var plotHeight = height - pad.top - pad.bottom;
+
+    if (history.length === 0) {
+      svg.innerHTML = "";
+      empty.style.display = "grid";
+      return;
+    }
+    empty.style.display = "none";
+
+    var points = history.slice(-MAX_POINTS);
+    var maxRps = 1, maxP95 = 50, maxErr = 1;
+    points.forEach(function (point) {
+      maxRps = Math.max(maxRps, point.rps);
+      maxP95 = Math.max(maxP95, point.p95 || 0);
+      maxErr = Math.max(maxErr, point.errRate * point.rps);
+    });
+    maxRps *= 1.2;
+    maxP95 *= 1.2;
+    maxErr = Math.max(1, maxErr) * 1.2;
+
+    var count = points.length;
+    var x = function (index) {
+      return pad.left + (count <= 1 ? plotWidth / 2 : (index / (MAX_POINTS - 1)) * plotWidth);
+    };
+    // Right-align: newest sample sits at "now"; older samples move left.
+    var offset = MAX_POINTS - count;
+    var xAt = function (index) { return x(index + offset); };
+    var yRps = function (value) { return pad.top + plotHeight - (value / maxRps) * plotHeight; };
+    var yP95 = function (value) { return pad.top + plotHeight - (value / maxP95) * plotHeight; };
+    var yErr = function (value) { return pad.top + plotHeight - (value / maxErr) * plotHeight; };
+
+    var parts = [];
+    parts.push('<defs>');
+    parts.push('<linearGradient id="areaRps" x1="0" y1="0" x2="0" y2="1">');
+    parts.push('<stop offset="0%" stop-color="#4ff0b7" stop-opacity="0.32"/>');
+    parts.push('<stop offset="100%" stop-color="#4ff0b7" stop-opacity="0"/>');
+    parts.push('</linearGradient>');
+    parts.push('<filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">');
+    parts.push('<feGaussianBlur stdDeviation="3" result="blur"/>');
+    parts.push('<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>');
+    parts.push('</filter>');
+    parts.push('</defs>');
+
+    // grid + left labels (req/s)
+    for (var row = 0; row <= 4; row += 1) {
+      var gy = pad.top + (plotHeight / 4) * row;
+      var value = maxRps - (maxRps / 4) * row;
+      parts.push('<line x1="' + pad.left + '" y1="' + gy + '" x2="' + (width - pad.right) + '" y2="' + gy + '" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>');
+      parts.push('<text x="' + (pad.left - 9) + '" y="' + (gy + 3.5) + '" text-anchor="end" fill="#5d6a87" font-family="ui-monospace, monospace" font-size="9.5">' + Math.round(value) + '</text>');
+    }
+
+    // error markers (thin red bars at the bottom)
+    points.forEach(function (point, index) {
+      var rate = point.errRate * point.rps;
+      if (rate <= 0) { return; }
+      var barHeight = Math.max(2, (rate / maxErr) * plotHeight * 0.55);
+      parts.push('<rect x="' + (xAt(index) - 2) + '" y="' + (pad.top + plotHeight - barHeight) + '" width="4" height="' + barHeight + '" rx="1" fill="rgba(255,107,129,0.75)"/>');
+    });
+
+    // rps area + line
+    var line = [];
+    points.forEach(function (point, index) {
+      line.push((index === 0 ? "M" : "L") + xAt(index).toFixed(2) + "," + yRps(point.rps).toFixed(2));
+    });
+    var area = "M" + xAt(0).toFixed(2) + "," + (pad.top + plotHeight).toFixed(2) + " " +
+      line.join(" ").replace(/^M/, "L") +
+      " L" + xAt(count - 1).toFixed(2) + "," + (pad.top + plotHeight).toFixed(2) + " Z";
+
+    parts.push('<path d="' + area + '" fill="url(#areaRps)"/>');
+    parts.push('<path d="' + line.join(" ") + '" fill="none" stroke="#4ff0b7" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" filter="url(#softGlow)"/>');
+
+    // p95 dashed line
+    var p95line = [];
+    points.forEach(function (point, index) {
+      p95line.push((index === 0 ? "M" : "L") + xAt(index).toFixed(2) + "," + yP95(point.p95 || 0).toFixed(2));
+    });
+    parts.push('<path d="' + p95line.join(" ") + '" fill="none" stroke="#a58bff" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.85" stroke-linejoin="round"/>');
+
+    // last point marker
+    var last = points[count - 1];
+    parts.push('<circle cx="' + xAt(count - 1) + '" cy="' + yRps(last.rps) + '" r="4" fill="#4ff0b7"/>');
+    parts.push('<circle cx="' + xAt(count - 1) + '" cy="' + yRps(last.rps) + '" r="9" fill="none" stroke="rgba(79,240,183,0.35)" stroke-width="1.5"/>');
+
+    // right-hand p95 scale (top only, keeps it uncluttered)
+    parts.push('<text x="' + (width - pad.right) + '" y="' + (pad.top - 4) + '" text-anchor="end" fill="#5d6a87" font-family="ui-monospace, monospace" font-size="9.5">p95 now ' + Math.round(last.p95 || 0) + 'ms</text>');
+
+    svg.innerHTML = parts.join("");
+    setText("chartNow", "now · " + new Date().toLocaleTimeString("en-US", { hour12: false }));
+  }
+
+  /* --------------------------------------------------------------- */
+  /*  KPIs                                                            */
+  /* --------------------------------------------------------------- */
+  function renderKpis(data) {
+    var totals = data.totals;
+    var latency = totals.latency_ms;
+
+    setText("kRps", totals.rps.toFixed(1));
+    setText("kP50", latency.p50 === null ? "—" : Math.round(latency.p50));
+    setText("kP95", latency.p95 === null ? "—" : Math.round(latency.p95));
+    setText("kP99", latency.p99 === null ? "—" : Math.round(latency.p99));
+    setText("kP50Sub", latency.samples + " samples kept");
+    setText("kP95Sub", "of " + latency.samples + " samples");
+    setText("kP99Sub", "of " + latency.samples + " samples");
+
+    var errorPercent = totals.error_rate * 100;
+    setText("kErr", errorPercent.toFixed(errorPercent >= 10 ? 0 : 1));
+    setText("kErrSub", totals.bad + " bad of " + (totals.good + totals.bad + totals.unreached) + " asks");
+
+    setText("kFlight", num(totals.in_flight));
+    var awake = data.backends.filter(function (backend) { return backend.alive; }).length;
+    setText("kFlightSub", awake + " of " + data.backends.length + " helpers awake");
+
+    setText("kP50Sub", latency.samples + " samples kept");
+
+    ["kP50Card", "kP95Card", "kP99Card"].forEach(function (id, index) {
+      var el = document.getElementById(id);
+      var value = [latency.p50, latency.p95, latency.p99][index];
+      el.className = "kpi " + classify(value, index === 0 ? 80 : 300, index === 0 ? 250 : 900);
+    });
+    document.getElementById("kErrCard").className = "kpi " + (errorPercent > 5 ? "bad" : errorPercent > 0 ? "warn" : "good");
+  }
+
+  /* --------------------------------------------------------------- */
+  /*  Backends                                                        */
+  /* --------------------------------------------------------------- */
+  function buildCard(backend) {
+    var card = document.createElement("article");
+    card.className = "backend";
+    card.innerHTML =
+      '<div class="b-head">' +
+        '<span class="b-dot"></span>' +
+        '<span class="b-name"></span>' +
+        '<span class="b-state">awake</span>' +
+      '</div>' +
+      '<div class="b-url"></div>' +
+      '<div class="b-main">' +
+        '<div class="ring" style="--pct:0"><span class="ring-value">0%</span><small>share</small></div>' +
+        '<div class="b-stats">' +
+          '<div class="b-stat"><span>turns</span><b class="v-turns">0</b></div>' +
+          '<div class="b-stat"><span>good</span><b class="v-good">0</b></div>' +
+          '<div class="b-stat"><span>bad</span><b class="v-bad">0</b></div>' +
+          '<div class="b-stat"><span>retries</span><b class="v-retries">0</b></div>' +
+          '<div class="b-stat"><span>skips</span><b class="v-skips">0</b></div>' +
+          '<div class="b-stat"><span>welcomes</span><b class="v-welcomes">0</b></div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="b-flight">' +
+        '<div class="bar"><i></i></div>' +
+        '<div class="meta"><span class="v-flight">0 in flight</span><span class="v-peak">peak 0</span></div>' +
+      '</div>' +
+      '<div class="b-lat">' +
+        '<span>p50 <b class="v-p50">&mdash;</b></span>' +
+        '<span>p95 <b class="v-p95">&mdash;</b></span>' +
+        '<span>last <b class="v-last">&mdash;</b></span>' +
+      '</div>';
+
+    card.querySelector(".b-name").textContent = backend.name;
+    card.querySelector(".b-url").textContent = backend.url;
+    card.querySelector(".b-url").title = backend.url;
+    return card;
+  }
+
+  function renderBackends(backends) {
+    var grid = $("#backends");
+    var seen = new Set();
+    var totalTurns = backends.reduce(function (sum, backend) { return sum + backend.turns; }, 0);
+    var maxFlight = Math.max(1, backends.reduce(function (max, backend) { return Math.max(max, backend.in_flight); }, 0));
+
+    backends.forEach(function (backend) {
+      seen.add(backend.name);
+      var card = cards.get(backend.name);
+      if (!card) {
+        card = buildCard(backend);
+        cards.set(backend.name, card);
+        grid.appendChild(card);
+      }
+
+      card.classList.toggle("asleep", !backend.alive);
+      card.querySelector(".b-state").textContent = backend.alive
+        ? "awake"
+        : (backend.down_for_seconds !== null ? "down " + duration(backend.down_for_seconds) : "asleep");
+
+      var share = totalTurns > 0 ? (backend.turns / totalTurns) * 100 : 0;
+      card.querySelector(".ring").style.setProperty("--pct", share.toFixed(1));
+      card.querySelector(".ring-value").textContent = Math.round(share) + "%";
+
+      card.querySelector(".v-turns").textContent = num(backend.turns);
+      card.querySelector(".v-good").textContent = num(backend.good);
+
+      var bad = card.querySelector(".v-bad");
+      bad.textContent = num(backend.bad);
+      bad.className = "v-bad" + (backend.bad > 0 ? " bad" : "");
+
+      var retries = card.querySelector(".v-retries");
+      retries.textContent = num(backend.retries);
+      retries.className = "v-retries" + (backend.retries > 0 ? " warn" : "");
+
+      var skips = card.querySelector(".v-skips");
+      skips.textContent = num(backend.skips);
+      skips.className = "v-skips" + (backend.skips > 0 ? " bad" : "");
+
+      card.querySelector(".v-welcomes").textContent = num(backend.welcomes);
+      card.querySelector(".v-flight").textContent = backend.in_flight + " in flight";
+      card.querySelector(".v-peak").textContent = "peak " + backend.in_flight_peak;
+
+      var bar = card.querySelector(".b-flight .bar i");
+      bar.style.width = Math.min(100, (backend.in_flight / maxFlight) * 100) + "%";
+
+      card.querySelector(".v-p50").innerHTML = ms(backend.latency_ms.p50);
+      card.querySelector(".v-p95").innerHTML = ms(backend.latency_ms.p95);
+      card.querySelector(".v-last").innerHTML = ms(backend.last_latency_ms);
+    });
+
+    cards.forEach(function (card, name) {
+      if (!seen.has(name)) {
+        card.remove();
+        cards.delete(name);
+      }
+    });
+
+    var awake = backends.filter(function (backend) { return backend.alive; }).length;
+    setText("helperSummary", awake + "/" + backends.length + " awake · " + num(totalTurns) + " turns handed out");
+  }
+
+  /* --------------------------------------------------------------- */
+  /*  Events + totals                                                 */
+  /* --------------------------------------------------------------- */
+  function renderEvents(events) {
+    var list = $("#events");
+    if (!events || events.length === 0) {
+      list.innerHTML = '<li class="quiet">quiet &mdash; nobody has been skipped yet</li>';
+      return;
+    }
+    list.innerHTML = events.slice(0, 12).map(function (event) {
+      return '<li class="' + (event.kind === "skip" ? "skip" : "welcome") + '">' +
+        '<time>' + esc(event.at) + '</time>' +
+        '<span class="who">' + esc(event.backend) + '</span>' +
+        '<span class="what">' + esc(event.detail) + '</span>' +
+      '</li>';
+    }).join("");
+  }
+
+  function renderTotals(data) {
+    var totals = data.totals;
+    var latency = totals.latency_ms;
+    var rows = [
+      ["turns", num(totals.turns), ""],
+      ["good", num(totals.good), "good"],
+      ["bad", num(totals.bad), totals.bad ? "bad" : ""],
+      ["retries", num(totals.retries) + " (" + totals.retries_recent + " recent)", ""],
+      ["unreached", num(totals.unreached), totals.unreached ? "bad" : ""],
+      ["skips", num(totals.skips), totals.skips ? "bad" : ""],
+      ["welcomes", num(totals.welcomes), totals.welcomes ? "good" : ""],
+      ["middle p50", ms(latency.p50), ""],
+      ["slow p95", ms(latency.p95), ""],
+      ["worst p99", ms(latency.p99), ""]
+    ];
+    setHtml("totals", rows.map(function (row) {
+      return '<div class="t-item"><span>' + row[0] + '</span><b class="' + row[2] + '">' + row[1] + '</b></div>';
+    }).join(""));
+
+    var sumTurns = data.backends.reduce(function (sum, backend) { return sum + backend.turns; }, 0);
+    var check = $("#sumCheck");
+    if (sumTurns === totals.turns) {
+      check.className = "check";
+      check.textContent = "adds up · Σ helper turns " + num(sumTurns) + " = total turns " + num(totals.turns) + " ✓";
+    } else {
+      check.className = "check wrong";
+      check.textContent = "mismatch · Σ helper turns " + num(sumTurns) + " ≠ total turns " + num(totals.turns);
+    }
+
+    setText("uptime", "up " + duration(data.uptime_seconds));
+    setText("pollInfo", "last update " + new Date().toLocaleTimeString("en-US", { hour12: false }) +
+      " · polled every 1s · memory kept: last 2048 samples");
+
+    document.title = "mini-load · " + totals.rps.toFixed(1) + " req/s · " + (totals.error_rate * 100).toFixed(1) + "% err";
+  }
+
+  /* --------------------------------------------------------------- */
+  /*  Strategy picker                                                 */
+  /* --------------------------------------------------------------- */
+  function syncStrategy(strategy) {
+    var select = $("#strategy");
+    var available = strategy.available || {};
+
+    if (!optionsBuilt && Object.keys(available).length) {
+      Object.keys(available).forEach(function (name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = available[name];
+        select.appendChild(option);
+      });
+      optionsBuilt = true;
+    }
+    currentStrategy = strategy.active;
+    if (document.activeElement !== select) {
+      select.value = strategy.active;
+    }
+  }
+
+  $("#strategy").addEventListener("change", async function (event) {
+    var select = event.target;
+    var next = select.value;
+    select.disabled = true;
+    try {
+      var response = await fetch("/ui/strategy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: next })
+      });
+      var body = await response.json();
+      if (!response.ok) { throw new Error(body.error || "switch failed"); }
+      toast("rule switched to " + body.active.replace(/_/g, " ") + " · no traffic dropped");
+    } catch (error) {
+      toast("could not switch rule: " + error.message, true);
+      if (currentStrategy) { select.value = currentStrategy; }
+    } finally {
+      select.disabled = false;
+    }
+  });
+
+  /* --------------------------------------------------------------- */
+  /*  Connection pill + poll loop                                     */
+  /* --------------------------------------------------------------- */
+  function setConnection(isLive, detail) {
+    var pill = $("#conn");
+    pill.className = "pill " + (isLive ? "live" : "down");
+    setText("connText", detail);
+    document.body.classList.toggle("offline", !isLive);
+  }
+
+  function render(data) {
+    syncStrategy(data.strategy);
+    renderKpis(data);
+    renderBackends(data.backends);
+    renderEvents(data.recent_events);
+    renderTotals(data);
+
+    var latency = data.totals.latency_ms;
+    history.push({
+      rps: data.totals.rps,
+      p95: latency.p95 || 0,
+      errRate: data.totals.error_rate
+    });
+    if (history.length > MAX_POINTS) { history.shift(); }
+    drawChart();
+  }
+
+  async function poll() {
+    try {
+      var response = await fetch("/stats", { cache: "no-store" });
+      if (!response.ok) { throw new Error("HTTP " + response.status); }
+      var data = await response.json();
+      lastGoodAt = Date.now();
+      setConnection(true, "live");
+      render(data);
+    } catch (error) {
+      var detail = lastGoodAt ? "door asleep · " + Math.round((Date.now() - lastGoodAt) / 1000) + "s ago" : "door unreachable";
+      setConnection(false, detail);
+    } finally {
+      clearTimeout(timer);
+      timer = setTimeout(poll, 1000);
+    }
+  }
+
+  function tickClock() {
+    setText("clock", new Date().toLocaleTimeString("en-US", { hour12: false }));
+  }
+
+  tickClock();
+  setInterval(tickClock, 1000);
+  setText("doorUrl", location.host);
+  drawChart();
+  poll();
+})();
+</script>
+</body>
 </html>

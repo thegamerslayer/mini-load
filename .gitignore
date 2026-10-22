@@ -22,5 +22,9 @@ Thumbs.db
 .idea/
 .vscode/
 
-
 *.md
+# README is the one markdown file GitHub must see, so un-ignore it.
+!README.md
+
+# --- Local scratch: lab output, browser profiles, screenshots in progress ---
+.tmp_logs/
